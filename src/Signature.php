@@ -266,7 +266,7 @@ class Signature
             ]
         ];
         // if ($this->options['encryption']) {
-        if ($this->options->encryption) {
+        if (property_exists($this->options, 'encryption') && $this->options->encryption) {
           $policy['conditions'][] = ['x-amz-server-side-encryption' => 'AES256'];
         }
         $policy = $this->addAdditionalInputs($policy);
