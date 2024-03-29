@@ -2,10 +2,13 @@
 
 namespace EddTurtle\DirectUpload\Tests;
 
-use EddTurtle\DirectUpload\InvalidOptionException;
+use EddTurtle\DirectUpload\Acl;
+use EddTurtle\DirectUpload\Exceptions\InvalidAclException;
+use EddTurtle\DirectUpload\Exceptions\InvalidOptionException;
 use EddTurtle\DirectUpload\Signature;
+use PHPUnit\Framework\TestCase;
 
-class SignatureTest extends \PHPUnit_Framework_TestCase
+class SignatureTest extends TestCase
 {
 
     // Bucket contains a '/' just to test that the name in the url is urlencoded.
@@ -19,42 +22,37 @@ class SignatureTest extends \PHPUnit_Framework_TestCase
         return $object;
     }
 
-    /**
-     * @expectedException \InvalidArgumentException
-     */
     public function testMissingKeyOrSecret()
     {
+        $this->expectException(\InvalidArgumentException::class);
         new Signature('', '', '', $this->testRegion);
     }
 
-    /**
-     * @expectedException \InvalidArgumentException
-     */
     public function testUnchangedKey()
     {
+        $this->expectException(\InvalidArgumentException::class);
         new Signature('YOUR_S3_KEY', 'secret', 'bucket', $this->testRegion);
     }
 
-    /**
-     * @expectedException \InvalidArgumentException
-     */
     public function testUnchangedSecret()
     {
+        $this->expectException(\InvalidArgumentException::class);
         new Signature('key', 'YOUR_S3_SECRET', 'bucket', $this->testRegion);
     }
 
     /**
      * @depends testInit
+     *
      * @param Signature $object
      */
     public function testBuildUrl($object)
     {
         $url = $object->getFormUrl();
-        $this->assertEquals("//" . "s3-" . $this->testRegion . ".amazonaws.com/" . urlencode($this->testBucket), $url);
+        $this->assertEquals("//" . "s3." . $this->testRegion . ".amazonaws.com/" . urlencode($this->testBucket), $url);
 
         // S3 Url is case-sensitive, make sure casing is preserved
         $url = (new Signature('key', 'secret', 'CAPS_BUCKET', 'eu-west-1'))->getFormUrl();
-        $this->assertEquals("//s3-eu-west-1.amazonaws.com/CAPS_BUCKET", $url);
+        $this->assertEquals("//s3.eu-west-1.amazonaws.com/CAPS_BUCKET", $url);
     }
 
     public function testBuildUrlForUsEast()
@@ -91,19 +89,6 @@ class SignatureTest extends \PHPUnit_Framework_TestCase
         }
     }
 
-    public function testGetOptions()
-    {
-        $object = new Signature('key', 'secret', 'test', $this->testRegion);
-        $options = $object->getOptions();
-        $this->assertTrue(count($options) === 10);
-        $this->assertArrayHasKey('success_status', $options);
-        $this->assertArrayHasKey('acl', $options);
-        $this->assertArrayHasKey('default_filename', $options);
-        $this->assertArrayHasKey('max_file_size', $options);
-        $this->assertArrayHasKey('expires', $options);
-        $this->assertArrayHasKey('valid_prefix', $options);
-    }
-
     public function testGetSignature()
     {
         $object = new Signature('key', 'secret', 'testbucket', $this->testRegion);
@@ -136,11 +121,12 @@ class SignatureTest extends \PHPUnit_Framework_TestCase
         $this->assertEquals(gmdate("Ymd\THis\Z"), $inputs['X-amz-date']);
         $this->assertEquals(Signature::ALGORITHM, $inputs['X-amz-algorithm']);
         $this->assertEquals('test/${filename}', $inputs['key']);
-        $this->assertEquals('key/' . date('Ymd') . '/' . $this->testRegion . '/s3/aws4_request', $inputs['X-amz-credential']);
+        $amlCred = 'key/' . date('Ymd') . '/' . $this->testRegion . '/s3/aws4_request';
+        $this->assertEquals($amlCred, $inputs['X-amz-credential']);
 
         // Test all values as string (and not objects which get cast later)
         foreach ($inputs as $input) {
-            $this->assertInternalType('string', $input);
+            $this->assertIsString($input);
         }
 
         return $object;
@@ -148,12 +134,13 @@ class SignatureTest extends \PHPUnit_Framework_TestCase
 
     /**
      * @depends testGetFormInputs
+     *
      * @param Signature $object
      */
     public function testGetFormInputsAsHtml($object)
     {
         $html = $object->getFormInputsAsHtml();
-        $this->assertContains($object->getSignature(), $html);
+        $this->assertStringContainsString($object->getSignature(), $html);
         $this->assertStringStartsWith('<input type', $html);
     }
 
@@ -176,4 +163,32 @@ class SignatureTest extends \PHPUnit_Framework_TestCase
         }
     }
 
+    public function testEncryptionOption()
+    {
+        $object = new Signature('k', 's', 'b', $this->testRegion, [
+            'encryption' => true
+        ]);
+        $this->assertArrayHasKey('X-amz-server-side-encryption', $object->getFormInputs());
+
+        $options = $object->getOptions();
+        $this->assertArrayHasKey('X-amz-server-side-encryption', $options['additional_inputs']);
+        $this->assertTrue($options['encryption']);
+    }
+
+    public function testAclOption()
+    {
+        $object = new Signature('k', 's', 'b', $this->testRegion, [
+            'acl' => 'private'
+        ]);
+        $object->setOptions(['acl' => 'public-read']);
+
+        $object->setOptions(['acl' => new Acl('public-read')]);
+
+        // Test Exception
+        try {
+            $object->setOptions(['acl' => 'invalid']);
+        } catch (InvalidAclException $e) {
+            $this->assertTrue($e instanceof InvalidAclException);
+        }
+    }
 }

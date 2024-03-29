@@ -2,6 +2,8 @@
 
 namespace EddTurtle\DirectUpload;
 
+use EddTurtle\DirectUpload\Exceptions\InvalidOptionException;
+
 /**
  * Class Signature
  *
@@ -12,59 +14,11 @@ namespace EddTurtle\DirectUpload;
  */
 class Signature
 {
+    const ALGORITHM = "AWS4-HMAC-SHA256";
+    const SERVICE = "s3";
+    const REQUEST_TYPE = "aws4_request";
 
-    CONST ALGORITHM = "AWS4-HMAC-SHA256";
-    CONST SERVICE = "s3";
-    CONST REQUEST_TYPE = "aws4_request";
-
-    /**
-     * Default options, these can be overwritten within the constructor.
-     *
-     * @var array
-     */
-    protected $options = [
-
-        // If the upload is a success, this is the http code we get back from S3.
-        // By default this will be a 201 Created.
-        'success_status' => 201,
-
-        // If the file should be private/public-read/public-write.
-        // This is file specific, not bucket. More info: http://amzn.to/1SSOgwO
-        'acl' => 'private',
-
-        // The file's name on s3, can be set with JS by changing the input[name="key"].
-        // ${filename} will just mean the original filename of the file being uploaded.
-        'default_filename' => '${filename}',
-
-        // The maximum file size of an upload in MB. Will refuse with a EntityTooLarge
-        // and 400 Bad Request if you exceed this limit.
-        'max_file_size' => 500,
-
-        // Request expiration time, specified in relative time format or in seconds.
-        // minimum of 1 (+1 second), maximum of 604800 (+7 days)
-        'expires' => '+6 hours',
-
-        // Server will check that the filename starts with this prefix and fail
-        // with a AccessDenied 403 if not.
-        'valid_prefix' => '',
-
-        // Strictly only allow a single content type, blank will allow all. Will fail
-        // with a AccessDenied 403 is this condition is not met.
-        'content_type' => '',
-
-        // Sets whether AWS server side encryption should be applied to the uploaded files,
-        // so that files will be encrypted with AES256 when at rest.
-        'encryption' => false,
-
-        // Allow S3 compatible solutions by specifying the domain it should POST to. Must be
-        // a valid url (inc. http/https) otherwise will throw InvalidOptionException.
-        'custom_url' => null,
-
-        // Any additional inputs to add to the form. This is an array of name => value
-        // pairs e.g. ['Content-Disposition' => 'attachment']
-        'additional_inputs' => []
-
-    ];
+    private $options;
 
     /**
      * @var string the AWS Key
@@ -104,15 +58,15 @@ class Signature
      * @param string $region  the s3 region this bucket is within. More info: http://amzn.to/1FtPG6r
      * @param array  $options any additional options, like acl and success status.
      */
-    public function __construct($key, $secret, $bucket, $region = "us-east-1", $options = [])
+    public function __construct(string $key, string $secret, string $bucket, string $region = "us-east-1", array $options = [])
     {
         $this->setAwsCredentials($key, $secret);
-        $this->populateTime();
+        $this->time = time();
 
         $this->bucket = $bucket;
         $this->region = new Region($region);
 
-        $this->setOptions($options);
+        $this->options = new Options($options);
     }
 
     /**
@@ -121,17 +75,23 @@ class Signature
      * @param string $key    the AWS API Key to use.
      * @param string $secret the AWS API Secret to use.
      */
-    protected function setAwsCredentials($key, $secret)
+    protected function setAwsCredentials(string $key, string $secret): void
     {
         // Key
-        if (empty($key) || $key === "YOUR_S3_KEY") {
-            throw new \InvalidArgumentException("Invalid AWS Key");
+        if (empty($key)) {
+            throw new \InvalidArgumentException("Empty AWS Key Provided");
+        }
+        if ($key === "YOUR_S3_KEY") {
+            throw new \InvalidArgumentException("Invalid AWS Key Provided");
         }
         $this->key = $key;
 
         // Secret
-        if (empty($secret) || $secret === "YOUR_S3_SECRET") {
-            throw new \InvalidArgumentException("Invalid AWS Secret");
+        if (empty($secret)) {
+            throw new \InvalidArgumentException("Empty AWS Secret Provided");
+        }
+        if ($secret === "YOUR_S3_SECRET") {
+            throw new \InvalidArgumentException("Invalid AWS Secret Provided");
         }
         $this->secret = $secret;
     }
@@ -141,18 +101,18 @@ class Signature
      *
      * @return string the s3 bucket's url.
      */
-    public function getFormUrl()
+    public function getFormUrl(): string
     {
-        if (!is_null($this->options['custom_url'])) {
+        if (!is_null($this->options->get('custom_url'))) {
             return $this->buildCustomUrl();
         } else {
             return $this->buildAmazonUrl();
         }
     }
 
-    private function buildCustomUrl()
+    private function buildCustomUrl(): string
     {
-        $url = trim($this->options['custom_url']);
+        $url = trim($this->options->get('custom_url'));
 
         if (filter_var($url, FILTER_VALIDATE_URL) === false) {
             throw new InvalidOptionException("The custom_url option you have specified is invalid");
@@ -163,18 +123,22 @@ class Signature
         return $url . $separator . urlencode($this->bucket);
     }
 
-    private function buildAmazonUrl()
+    private function buildAmazonUrl(): string
     {
         $region = (string)$this->region;
 
         // Only the us-east-1 region is exempt from needing the region in the url.
         if ($region !== "us-east-1") {
-            $middle = "-" . $region;
+            $middle = "." . $region;
         } else {
             $middle = "";
         }
 
-        return "//" . self::SERVICE . $middle . ".amazonaws.com" . "/" . urlencode($this->bucket);
+        if ($this->options->get('accelerate')) {
+            return "//" . urlencode($this->bucket) . "." . self::SERVICE . "-accelerate.amazonaws.com";
+        } else {
+            return "//" . self::SERVICE . $middle . ".amazonaws.com" . "/" . urlencode($this->bucket);
+        }
     }
 
     /**
@@ -182,25 +146,21 @@ class Signature
      *
      * @return array
      */
-    public function getOptions()
+    public function getOptions(): array
     {
-        return $this->options;
+        return $this->options->getOptions();
     }
 
     /**
-     * Set/overwrite any default options.
+     * Edit/Update a new list of options.
      *
-     * @param array $options any options to override.
+     * @param array $options a list of options to update.
+     *
+     * @return void
      */
-    public function setOptions($options)
+    public function setOptions(array $options): void
     {
-        // Overwrite default options
-        $this->options = $options + $this->options;
-
-        $this->options['acl'] = new Acl($this->options['acl']);
-
-        // Return HTTP code must be a string
-        $this->options['success_status'] = (string)$this->options['success_status'];
+        $this->options->setOptions($options);
     }
 
     /**
@@ -208,7 +168,7 @@ class Signature
      *
      * @return string the aws v4 signature.
      */
-    public function getSignature()
+    public function getSignature(): string
     {
         if (is_null($this->signature)) {
             $this->generateScope();
@@ -226,14 +186,14 @@ class Signature
      *
      * @return array of the form inputs.
      */
-    public function getFormInputs($addKey = true)
+    public function getFormInputs($addKey = true): array
     {
         $this->getSignature();
 
         $inputs = [
-            'Content-Type' => $this->options['content_type'],
-            'acl' => (string)$this->options['acl'],
-            'success_action_status' => $this->options['success_status'],
+            'Content-Type' => $this->options->get('content_type'),
+            'acl' => (string)$this->options->get('acl'),
+            'success_action_status' => $this->options->get('success_status'),
             'policy' => $this->base64Policy,
             'X-amz-credential' => $this->credentials,
             'X-amz-algorithm' => self::ALGORITHM,
@@ -241,16 +201,12 @@ class Signature
             'X-amz-signature' => $this->signature
         ];
 
-        if ($this->options['encryption']) {
-            $inputs['X-amz-server-side-encryption'] = 'AES256';
-        }
-
-        $inputs = array_merge($inputs, $this->options['additional_inputs']);
+        $inputs = array_merge($inputs, $this->options->get('additional_inputs'));
 
         if ($addKey) {
             // Note: The Key (filename) will need to be populated with JS on upload
             // if anything other than the filename is wanted.
-            $inputs['key'] = $this->options['valid_prefix'] . $this->options['default_filename'];
+            $inputs['key'] = $this->options->get('valid_prefix') . $this->options->get('default_filename');
         }
 
         return $inputs;
@@ -263,7 +219,7 @@ class Signature
      *
      * @return string html of hidden form inputs.
      */
-    public function getFormInputsAsHtml($addKey = true)
+    public function getFormInputsAsHtml($addKey = true): string
     {
         $inputs = [];
         foreach ($this->getFormInputs($addKey) as $name => $value) {
@@ -278,7 +234,7 @@ class Signature
     /**
      * Step 1: Generate the Scope
      */
-    protected function generateScope()
+    protected function generateScope(): void
     {
         $scope = [
             $this->key,
@@ -293,17 +249,17 @@ class Signature
     /**
      * Step 2: Generate a Base64 Policy
      */
-    protected function generatePolicy()
+    protected function generatePolicy(): void
     {
         $policy = [
             'expiration' => $this->getExpirationDate(),
             'conditions' => [
                 ['bucket' => $this->bucket],
-                ['acl' => (string)$this->options['acl']],
-                ['starts-with', '$key', $this->options['valid_prefix']],
+                ['acl' => (string)$this->options->get('acl')],
+                ['starts-with', '$key', $this->options->get('valid_prefix')],
                 $this->getPolicyContentTypeArray(),
-                ['content-length-range', 0, $this->mbToBytes($this->options['max_file_size'])],
-                ['success_action_status' => $this->options['success_status']],
+                ['content-length-range', 0, $this->mbToBytes($this->options->get('max_file_size'))],
+                ['success_action_status' => $this->options->get('success_status')],
                 ['x-amz-credential' => $this->credentials],
                 ['x-amz-algorithm' => self::ALGORITHM],
                 ['x-amz-date' => $this->getFullDateFormat()]
@@ -316,19 +272,19 @@ class Signature
         $this->base64Policy = base64_encode(json_encode($policy));
     }
 
-    private function getPolicyContentTypeArray()
+    private function getPolicyContentTypeArray(): array
     {
-        $contentTypePrefix = (empty($this->options['content_type']) ? 'starts-with' : 'eq');
+        $contentTypePrefix = (empty($this->options->get('content_type')) ? 'starts-with' : 'eq');
         return [
             $contentTypePrefix,
             '$Content-Type',
-            $this->options['content_type']
+            $this->options->get('content_type')
         ];
     }
 
-    private function addAdditionalInputs($policy)
+    private function addAdditionalInputs($policy): array
     {
-        foreach ($this->options['additional_inputs'] as $name => $value) {
+        foreach ($this->options->get('additional_inputs') as $name => $value) {
             $policy['conditions'][] = ['starts-with', '$' . $name, $value];
         }
         return $policy;
@@ -337,7 +293,7 @@ class Signature
     /**
      * Step 3: Generate and sign the Signature (v4)
      */
-    protected function generateSignature()
+    protected function generateSignature(): void
     {
         $signatureData = [
             $this->getShortDateFormat(),
@@ -348,7 +304,7 @@ class Signature
 
         // Iterates over the data (defined in the array above), hashing it each time.
         $initial = 'AWS4' . $this->secret;
-        $signingKey = array_reduce($signatureData, function($key, $data) {
+        $signingKey = array_reduce($signatureData, function ($key, $data) {
             return $this->keyHash($data, $key);
         }, $initial);
 
@@ -359,19 +315,12 @@ class Signature
 
     // Helper functions
 
-    private function keyHash($date, $key, $raw = true)
+    private function keyHash($data, $key, $raw = true): string
     {
-        return hash_hmac('sha256', $date, $key, $raw);
+        return hash_hmac('sha256', $data, $key, $raw);
     }
 
-    private function populateTime()
-    {
-        if (is_null($this->time)) {
-            $this->time = time();
-        }
-    }
-
-    private function mbToBytes($megaByte)
+    private function mbToBytes($megaByte): int
     {
         if (is_numeric($megaByte)) {
             return $megaByte * pow(1024, 2);
@@ -381,22 +330,21 @@ class Signature
 
 
     // Dates
-
-    private function getShortDateFormat()
+    private function getShortDateFormat(): string
     {
         return gmdate("Ymd", $this->time);
     }
 
-    private function getFullDateFormat()
+    private function getFullDateFormat(): string
     {
         return gmdate("Ymd\THis\Z", $this->time);
     }
 
-    private function getExpirationDate()
+    private function getExpirationDate(): string
     {
         // Note: using \DateTime::ISO8601 doesn't work :(
 
-        $exp = strtotime($this->options['expires'], $this->time);
+        $exp = strtotime($this->options->get('expires'), $this->time);
         $diff = $exp - $this->time;
 
         if (!($diff >= 1 && $diff <= 604800)) {
@@ -405,6 +353,4 @@ class Signature
 
         return gmdate('Y-m-d\TG:i:s\Z', $exp);
     }
-
-
 }
