@@ -265,7 +265,8 @@ class Signature
                 ['x-amz-date' => $this->getFullDateFormat()]
             ]
         ];
-        if ($this->options['encryption']) {
+        // if ($this->options['encryption']) {
+        if ($this->options->encryption) {
           $policy['conditions'][] = ['x-amz-server-side-encryption' => 'AES256'];
         }
         $policy = $this->addAdditionalInputs($policy);
